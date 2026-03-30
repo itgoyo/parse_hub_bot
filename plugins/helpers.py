@@ -121,21 +121,72 @@ async def process_media_files(download_result) -> list[ProcessedMedia]:
     return processed_list
 
 
-def get_supported_platforms():
-    text = []
-    for i in ParseHub().get_platforms():
-        text.append(f"**{i['name']}** __({'__, __'.join(i['supported_types'])})__")
-    text.sort(reverse=True)
-    return "\n".join(text)
+_PLATFORM_NAME_MAP: dict[str, str] = {
+    "twitter": "Twitter / X",
+    "douyin": "抖音 / TikTok",
+    "youtube": "YouTube",
+}
+
+_PLATFORM_EXTRA_TYPES: dict[str, list[str]] = {
+    "twitter": ["文章"],
+}
+
+_SPECIAL_TYPE_EMOJI: dict[str, str] = {
+    "动态": "📝",
+    "文章": "📝",
+    "音乐": "🎵",
+}
+
+_PLATFORM_ORDER: list[str] = [
+    "twitter", "instagram", "youtube", "facebook", "threads",
+    "bilibili", "douyin", "weibo", "xhs", "tieba",
+    "weixin", "kuaishou", "coolapk", "pipix", "zuiyou", "xiaoheihe",
+]
 
 
-def build_start_text():
+def _format_platform_line(name: str, supported_types: list[str]) -> str:
+    tags: list[str] = []
+    for t in supported_types:
+        if t in ("视频", "图文"):
+            tags.append(f"✅{t}")
+        else:
+            emoji = _SPECIAL_TYPE_EMOJI.get(t, "📌")
+            tags.append(f"{emoji} {t}")
+    return f"**{name}**  {'  '.join(tags)}"
+
+
+def get_supported_platforms() -> str:
+    platform_data: dict[str, dict] = {}
+    for p in ParseHub().get_platforms():
+        platform_data[p["id"]] = p
+
+    result_lines: list[str] = []
+    ordered_ids = list(_PLATFORM_ORDER)
+    for pid in platform_data:
+        if pid not in ordered_ids:
+            ordered_ids.append(pid)
+
+    for pid in ordered_ids:
+        if pid not in platform_data:
+            continue
+        p = platform_data[pid]
+        name = _PLATFORM_NAME_MAP.get(pid, p["name"])
+        types = list(p["supported_types"])
+        for extra in _PLATFORM_EXTRA_TYPES.get(pid, []):
+            if extra not in types:
+                types.append(extra)
+        result_lines.append(_format_platform_line(name, types))
+
+    return "\n".join(result_lines)
+
+
+def build_start_text() -> str:
     return (
-        f"**发送分享链接以进行解析**\n\n"
-        f"**支持的平台:**\n"
-        f"<blockquote expandable>{get_supported_platforms()}</blockquote>\n\n"
-        f"**命令列表:**\n"
-        f"`/jx <链接>` - 解析并发送媒体\n"
-        f"`/raw <链接>` - 不处理媒体, 发送原始文件\n"
-        f"`/zip <链接>` - 不处理媒体, 保存解析结果, 发送压缩包\n\n"
+        "**发送分享链接以进行解析**\n\n"
+        "**支持的平台:**\n"
+        f"<blockquote>{get_supported_platforms()}</blockquote>\n\n"
+        "**命令列表:**\n"
+        "`/jx <链接>` - 解析并发送媒体\n"
+        "`/raw <链接>` - 不处理媒体, 发送原始文件\n"
+        "`/zip <链接>` - 不处理媒体, 保存解析结果, 发送压缩包\n\n"
     )

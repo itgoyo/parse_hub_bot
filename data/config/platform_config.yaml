@@ -1,0 +1,27 @@
+default_parser_proxies: http://127.0.0.1:7890
+default_downloader_proxies:
+- http://127.0.0.1:7890
+platforms:
+  douyin:
+    disable_parser_proxy: true
+    disable_downloader_proxy: true
+  bilibili:
+    disable_parser_proxy: true
+    disable_downloader_proxy: true
+  kuaishou:
+    disable_parser_proxy: true
+    disable_downloader_proxy: true
+  weibo:
+    disable_parser_proxy: true
+    disable_downloader_proxy: true
+  xhs:
+    disable_parser_proxy: true
+    disable_downloader_proxy: true
+  instagram:
+    disable_parser_proxy: false
+    disable_downloader_proxy: false
+  youtube:
+    disable_parser_proxy: false
+    disable_downloader_proxy: false
+  twitter:
+    disable_downloader_proxy: true
