@@ -6,7 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "haishoku>=1.1.8",
-    "httpx>=0.28.1",
+    "httpx[socks]>=0.28.1",
+    "json-repair>=0.58.7",
     "kurigram>=2.2.7",
     "loguru>=0.6.0",
     "lxml-html-clean>=0.4.1",

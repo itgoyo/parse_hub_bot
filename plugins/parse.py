@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 from collections.abc import Awaitable, Callable
 from itertools import batched
 from typing import Literal
@@ -15,6 +16,8 @@ from parsehub.types import (
 from pyrogram import Client, enums, filters
 from pyrogram.errors import FloodWait
 from pyrogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     InputMediaAnimation,
     InputMediaDocument,
     InputMediaPhoto,
@@ -34,13 +37,35 @@ from plugins.helpers import (
     resolve_media_info,
 )
 from services import ParseService
+from services.ad import get_random_ad
 from services.cache import CacheEntry, CacheMedia, CacheMediaType, CacheParseResult, parse_cache, persistent_cache
 from services.pipeline import ParsePipeline, PipelineResult, StatusReporter
+from services.platform_tokens import PlatformTokenStore
 from utils.helpers import pack_dir_to_tar_gz, to_list, with_request_id
 
 logger = logger.bind(name="Parse")
 SKIP_DOWNLOAD_THRESHOLD = 0
 MAX_RETRIES = 5
+
+# Platforms that support user-provided token input
+_TOKEN_SUPPORTED_PLATFORMS = {"twitter", "bilibili"}
+
+# Users waiting to input platform token: {chat_id: {url, mode, platform_id}}
+_token_waiting: dict[int, dict] = {}
+
+
+async def _get_ad_markup() -> InlineKeyboardMarkup | None:
+    ad = await get_random_ad()
+    if not ad:
+        return None
+    label, url = ad
+    return InlineKeyboardMarkup([[InlineKeyboardButton(label, url=url)]])
+
+
+async def _send_ad_button(msg: Message) -> None:
+    markup = await _get_ad_markup()
+    if markup:
+        await _send_with_rate_limit(lambda: msg.reply_text("📢 推荐", reply_markup=markup, quote=False))
 
 
 async def _send_with_rate_limit[T](
@@ -137,6 +162,75 @@ async def jx(cli: Client, msg: Message):
     await asyncio.gather(*tasks)
 
 
+# ── Platform Token 输入处理 ───────────────────────────────────────────
+
+# Cookie key patterns per platform
+_PLATFORM_COOKIE_KEYS: dict[str, list[str]] = {
+    "twitter": ["auth_token", "ct0"],
+    "bilibili": ["SESSDATA", "bili_jct"],
+}
+
+_PLATFORM_DISPLAY_NAMES: dict[str, str] = {
+    "twitter": "Twitter",
+    "bilibili": "Bilibili",
+}
+
+
+def _detect_platform_from_cookie(text: str) -> str | None:
+    """Detect which platform a cookie string belongs to."""
+    for platform_id, keys in _PLATFORM_COOKIE_KEYS.items():
+        if all(re.search(rf"{re.escape(k)}\s*=\s*\S+", text) for k in keys):
+            return platform_id
+    return None
+
+
+def _platform_cookie_filter(_, __, msg: Message):
+    text = msg.text or ""
+    return _detect_platform_from_cookie(text) is not None
+
+
+@Client.on_message(filters.private & filters.create(_platform_cookie_filter))
+async def handle_platform_token_input(cli: Client, msg: Message):
+    text = msg.text.strip()
+    platform_id = _detect_platform_from_cookie(text)
+    if not platform_id:
+        return
+
+    display_name = _PLATFORM_DISPLAY_NAMES.get(platform_id, platform_id)
+    keys = _PLATFORM_COOKIE_KEYS[platform_id]
+
+    # Extract each cookie value
+    values: dict[str, str] = {}
+    for key in keys:
+        m = re.search(rf"{re.escape(key)}\s*=\s*([^;\s]+)", text)
+        if not m:
+            example = "; ".join(f"{k}=xxx" for k in keys)
+            await msg.reply_text(f"**▎格式错误，请按以下格式发送：**\n`{example}`")
+            return
+        values[key] = m.group(1)
+
+    store = PlatformTokenStore(platform_id)
+    is_new = store.add_token(values)
+
+    if is_new:
+        await msg.reply_text(
+            f"**▎{display_name} Token 已保存** ✅\n"
+            f"当前共有 {store.count()} 个可用 Token。\n"
+            f"现在可以重新发送链接进行解析。"
+        )
+    else:
+        await msg.reply_text(
+            f"**▎{display_name} Token 已更新** ✅\n"
+            f"当前共有 {store.count()} 个可用 Token。"
+        )
+
+    # If user was waiting to parse, retry
+    chat_id = msg.chat.id
+    if chat_id in _token_waiting:
+        waiting = _token_waiting.pop(chat_id)
+        await handle_parse(cli, msg, waiting["url"], waiting.get("mode", "preview"))
+
+
 # ── 主流程 ───────────────────────────────────────────────────────────
 
 
@@ -171,9 +265,33 @@ async def handle_parse(
     if use_caching and (cached := await persistent_cache.get(raw_url)):
         logger.debug("file_id 缓存命中, 直接发送")
         await _send_cached(msg, cached, raw_url)
+        await _send_ad_button(msg)
         return
 
+    # ── Pre-parse to detect auth errors ──
     cached_parse_result = await parse_cache.get(raw_url)
+    if not cached_parse_result:
+        try:
+            cached_parse_result = await ParseService().parse(url)
+            await parse_cache.set(raw_url, cached_parse_result)
+        except Exception as e:
+            err_str = str(e)
+            platform_id = None
+            try:
+                platform_id = ParseService().get_platform(url).id
+            except Exception:
+                pass
+            if platform_id and platform_id in _TOKEN_SUPPORTED_PLATFORMS and PlatformTokenStore.is_auth_error(platform_id, err_str):
+                store = PlatformTokenStore(platform_id)
+                if not store.has_tokens():
+                    _token_waiting[msg.chat.id] = {"url": url, "mode": mode, "platform_id": platform_id}
+                    tutorial = PlatformTokenStore.get_tutorial(platform_id)
+                    await reporter.dismiss()
+                    await msg.reply_text(tutorial, link_preview_options=LinkPreviewOptions(is_disabled=True))
+                    return
+            await reporter.report_error("解析", e)
+            return
+
     pipeline = ParsePipeline(
         url,
         reporter,
@@ -189,6 +307,7 @@ async def handle_parse(
             logger.debug("Singleflight 等待完成, 重新检查缓存")
             if cached := await persistent_cache.get(raw_url):
                 await _send_cached(msg, cached, raw_url)
+                await _send_ad_button(msg)
             else:
                 await handle_parse(cli, msg, url, mode=mode)
                 return
@@ -219,6 +338,7 @@ async def handle_parse(
                 ),
             )
             await reporter.dismiss()
+            await _send_ad_button(msg)
             return
         finally:
             pipeline.finish()
@@ -234,14 +354,17 @@ async def handle_parse(
         cache_entry = CacheEntry(parse_result=CacheParseResult(title=parse_result.title, content=parse_result.content))
         await persistent_cache.set(raw_url, cache_entry)
         await reporter.dismiss()
+        await _send_ad_button(msg)
         pipeline.finish()
         return
 
     if mode == "raw":
         await _send_raw(msg, result, reporter)
+        await _send_ad_button(msg)
         return
     if mode == "zip":
         await _send_zip(msg, result, reporter)
+        await _send_ad_button(msg)
         return
 
     # ── 上传媒体 ──
@@ -252,6 +375,7 @@ async def handle_parse(
         if cache_entry:
             await persistent_cache.set(raw_url, cache_entry)
         await reporter.dismiss()
+        await _send_ad_button(msg)
     except Exception as e:
         logger.opt(exception=e).debug("详细堆栈")
         logger.error(f"上传失败: {e}")
