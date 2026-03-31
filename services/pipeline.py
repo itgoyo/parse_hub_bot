@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Protocol
 
 from parsehub import DownloadResult
-from parsehub.types import AnyParseResult, PostType, ProgressUnit
+from parsehub.types import AnyParseResult, DownloadError, PostType, ProgressUnit
 
 from core import bs, pl_cfg
 from log import logger
@@ -44,14 +44,33 @@ class PipelineResult:
             shutil.rmtree(self.output_dir, ignore_errors=True)
 
 
+class FileTooLargeError(DownloadError):
+    """文件超过大小限制"""
+
+    def __init__(self, size_mb: float, limit_mb: float):
+        self.size_mb = size_mb
+        self.limit_mb = limit_mb
+        super().__init__(f"文件大小 {size_mb:.0f}MB 超过限制 {limit_mb:.0f}MB")
+
+
 class PipelineProgressCallback:
     """统一的下载进度回调，依赖 StatusReporter"""
 
-    def __init__(self, reporter: StatusReporter):
+    def __init__(self, reporter: StatusReporter, max_download_size: int = 0):
         self._reporter = reporter
+        self._max_size = max_download_size
+        self._size_checked = False
         self._last_text: str | None = None
 
     async def __call__(self, current: int, total: int, unit: ProgressUnit, *args, **kwargs) -> None:
+        if not self._size_checked and self._max_size and total > 0 and unit == "bytes":
+            self._size_checked = True
+            if total > self._max_size:
+                raise FileTooLargeError(
+                    size_mb=total / (1024 * 1024),
+                    limit_mb=self._max_size / (1024 * 1024),
+                )
+
         from plugins.helpers import progress as fmt_progress
 
         text = fmt_progress(current, total, unit)
@@ -159,7 +178,8 @@ class ParsePipeline:
         p = ps.parser.get_platform(self._url)
         proxy = pl_cfg.roll_downloader_proxy(p.id)
         logger.debug(f"使用配置: proxy={proxy}")
-        progress_cb = PipelineProgressCallback(self._reporter)
+        max_size = bs.max_download_size * 1024 * 1024 if bs.max_download_size else 0
+        progress_cb = PipelineProgressCallback(self._reporter, max_download_size=max_size)
         download_result: DownloadResult = await self._step(
             "下载",
             lambda: parse_result.download(
@@ -210,6 +230,17 @@ class ParsePipeline:
                 cleanup()
             return None
         except Exception as e:
+            # 检查是否为文件过大错误（可能被 DownloadError 包装）
+            orig = e.__cause__ if e.__cause__ else e
+            if isinstance(orig, FileTooLargeError):
+                logger.warning(f"文件过大被拦截: {orig.size_mb:.0f}MB > {orig.limit_mb:.0f}MB")
+                await self._reporter.report_error(
+                    stage,
+                    Exception(f"⚠️ 视频文件过大 ({orig.size_mb:.0f}MB)，超过 {orig.limit_mb:.0f}MB 限制，无法下载"),
+                )
+                if cleanup:
+                    cleanup()
+                return None
             logger.exception(e)
             logger.error(f"{stage}失败, 以上为错误信息")
             await self._reporter.report_error(stage, e)

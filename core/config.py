@@ -36,6 +36,7 @@ class BotSettings(BaseSettings):
     mysql_db: str = Field(default="parse_hub_bot")
     daily_free_quota: int = Field(default=5, description="每日免费解析次数")
     ad_bonus_quota: int = Field(default=5, description="点击广告奖励解析次数")
+    max_download_size: int = Field(default=1024, description="最大下载文件大小(MB), 0为不限制")
 
     def model_post_init(self, __context) -> None:
         """模型初始化后的操作"""
