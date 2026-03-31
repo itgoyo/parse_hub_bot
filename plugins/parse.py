@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+import time
 from collections.abc import Awaitable, Callable
 from itertools import batched
 from typing import Literal
@@ -39,6 +40,7 @@ from plugins.helpers import (
 from services import ParseService
 from services.ad import get_random_ad
 from services.cache import CacheEntry, CacheMedia, CacheMediaType, CacheParseResult, parse_cache, persistent_cache
+from services.db import check_and_consume_quota, get_remaining_quota, log_ad_click, log_parse, upsert_user
 from services.pipeline import ParsePipeline, PipelineResult, StatusReporter
 from services.platform_tokens import PlatformTokenStore
 from utils.helpers import pack_dir_to_tar_gz, to_list, with_request_id
@@ -53,6 +55,9 @@ _TOKEN_SUPPORTED_PLATFORMS = {"twitter", "bilibili", "youtube"}
 # Users waiting to input platform token: {chat_id: {url, mode, platform_id}}
 _token_waiting: dict[int, dict] = {}
 
+# 配额广告映射: user_id -> {ad_label, ad_url, shown_at}
+_pending_ad_claims: dict[int, dict] = {}
+
 
 async def _get_ad_markup() -> InlineKeyboardMarkup | None:
     ad = await get_random_ad()
@@ -60,6 +65,33 @@ async def _get_ad_markup() -> InlineKeyboardMarkup | None:
         return None
     label, url = ad
     return InlineKeyboardMarkup([[InlineKeyboardButton(label, url=url)]])
+
+
+async def _send_quota_ad(msg: Message) -> None:
+    """发送配额广告：展示广告链接，提示用户查看后发送 /claim 领取额度。"""
+    ad = await get_random_ad()
+    if not ad:
+        await msg.reply_text(
+            f"**▎今日解析次数已用完** 🚫\n\n"
+            f"每日免费 {bs.daily_free_quota} 次，明天再来吧！"
+        )
+        return
+
+    label, url = ad
+    user_id = msg.from_user.id
+    _pending_ad_claims[user_id] = {
+        "ad_label": label,
+        "ad_url": url,
+        "shown_at": time.time(),
+    }
+
+    await msg.reply_text(
+        f"**▎今日解析次数已用完** 🚫\n\n"
+        f"每日免费 {bs.daily_free_quota} 次，点击下方广告链接查看后，发送 /claim 即可获得额外 **{bs.ad_bonus_quota}** 次额度。",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"📢 {label}", url=url)],
+        ]),
+    )
 
 
 async def _send_ad_button(msg: Message) -> None:
@@ -127,6 +159,37 @@ class MessageStatusReporter(StatusReporter):
             pass
 
 
+# ── 广告额度领取 /claim ───────────────────────────────────────────
+
+_CLAIM_MIN_WAIT = 8  # 秒，展示广告后至少等待时间
+
+
+@Client.on_message(filters.command("claim"))
+async def handle_claim(cli: Client, msg: Message):
+    user_id = msg.from_user.id
+    pending = _pending_ad_claims.pop(user_id, None)
+
+    if not pending:
+        await msg.reply_text("**▎没有可领取的额度** \n请先发送解析链接，当次数用完时会收到广告。")
+        return
+
+    elapsed = time.time() - pending["shown_at"]
+    if elapsed < _CLAIM_MIN_WAIT:
+        # 还没看够时间，放回去
+        _pending_ad_claims[user_id] = pending
+        wait = int(_CLAIM_MIN_WAIT - elapsed) + 1
+        await msg.reply_text(f"**▎请先点击广告链接查看** \n{wait} 秒后再发送 /claim 领取额度。")
+        return
+
+    await log_ad_click(user_id, pending["ad_label"])
+    remaining = await get_remaining_quota(user_id)
+    await msg.reply_text(
+        f"**▎额度领取成功** ✅\n\n"
+        f"已获得 **{bs.ad_bonus_quota}** 次解析额度，今日剩余 **{remaining}** 次。\n"
+        f"现在可以继续发送链接进行解析。"
+    )
+
+
 # ── Handler ──────────────────────────────────────────────────────────
 
 
@@ -158,8 +221,8 @@ async def jx(cli: Client, msg: Message):
         await msg.reply_text("**▎不支持的平台**")
         return
 
-    tasks = [handle_parse(cli, msg, url, mode) for url in urls]
-    await asyncio.gather(*tasks)
+    for url in urls:
+        await handle_parse(cli, msg, url, mode)
 
 
 # ── Platform Token 输入处理 ───────────────────────────────────────────
@@ -241,6 +304,21 @@ async def handle_parse(
     cli: Client, msg: Message, url: str, mode: Literal["raw", "preview", "zip"] | str = "preview"
 ) -> None:
     logger.debug(f"收到解析请求: url={url}, chat_id={msg.chat.id}, msg_id={msg.id}, mode={mode}")
+
+    # ── 记录用户 & 配额检查 ──
+    user = msg.from_user
+    user_id = user.id if user else None
+    if user:
+        nickname = user.first_name or ""
+        if user.last_name:
+            nickname += f" {user.last_name}"
+        await upsert_user(user.id, nickname)
+
+        allowed, remaining = await check_and_consume_quota(user.id, url)
+        if not allowed:
+            await _send_quota_ad(msg)
+            return
+
     reporter = MessageStatusReporter(msg)
     match mode:
         case "raw":
@@ -267,6 +345,8 @@ async def handle_parse(
     if use_caching and (cached := await persistent_cache.get(raw_url)):
         logger.debug("file_id 缓存命中, 直接发送")
         await _send_cached(msg, cached, raw_url)
+        if user_id:
+            await log_parse(user_id, url)
         await _send_ad_button(msg)
         return
 
@@ -285,12 +365,44 @@ async def handle_parse(
                 pass
             if platform_id and platform_id in _TOKEN_SUPPORTED_PLATFORMS and PlatformTokenStore.is_auth_error(platform_id, err_str):
                 store = PlatformTokenStore(platform_id)
+
+                # Cookie 已过期（例如 YouTube cookie 被浏览器轮换）
+                if store.has_tokens() and PlatformTokenStore.is_cookie_expired(platform_id, err_str):
+                    store.remove_token_by_cookie_str(store.get_cookie_str() or "")
+                    logger.warning(f"{platform_id} Cookie 已过期, 已删除")
+                    _token_waiting[msg.chat.id] = {"url": url, "mode": mode, "platform_id": platform_id}
+                    await reporter.dismiss()
+                    await msg.reply_text(
+                        f"**▎{platform_id} Cookie 已过期** ⚠️\n\n"
+                        f"您之前提交的 Cookie 已被浏览器自动轮换失效。\n"
+                        f"请重新获取最新的 Cookie 并发送给我。\n\n"
+                        f"⚠️ **注意：** 导出 Cookie 后请**不要**在浏览器上继续操作该网站，否则 Cookie 会立即失效。",
+                        link_preview_options=LinkPreviewOptions(is_disabled=True),
+                    )
+                    return
+
+                # IP 被限流（429）
+                if PlatformTokenStore.is_rate_limited(err_str):
+                    await reporter.report_error(
+                        "解析",
+                        Exception("YouTube 当前 IP 请求过于频繁 (429)，请稍后再试。这与 Cookie 无关。"),
+                    )
+                    return
+
+                # 没有 Cookie，提示用户提交
                 if not store.has_tokens():
                     _token_waiting[msg.chat.id] = {"url": url, "mode": mode, "platform_id": platform_id}
                     tutorial = PlatformTokenStore.get_tutorial(platform_id)
                     await reporter.dismiss()
                     await msg.reply_text(tutorial, link_preview_options=LinkPreviewOptions(is_disabled=True))
                     return
+
+                # Cookie 存在但其他原因失败
+                await reporter.report_error(
+                    "解析",
+                    Exception(f"{platform_id} 当前访问受限，请稍后重试。已有的 Cookie 仍然有效，无需重新提交。"),
+                )
+                return
             await reporter.report_error("解析", e)
             return
 
@@ -339,6 +451,8 @@ async def handle_parse(
                     telegraph_url=ph_url,
                 ),
             )
+            if user_id:
+                await log_parse(user_id, url)
             await reporter.dismiss()
             await _send_ad_button(msg)
             return
@@ -355,6 +469,8 @@ async def handle_parse(
         )
         cache_entry = CacheEntry(parse_result=CacheParseResult(title=parse_result.title, content=parse_result.content))
         await persistent_cache.set(raw_url, cache_entry)
+        if user_id:
+            await log_parse(user_id, url)
         await reporter.dismiss()
         await _send_ad_button(msg)
         pipeline.finish()
@@ -362,10 +478,14 @@ async def handle_parse(
 
     if mode == "raw":
         await _send_raw(msg, result, reporter)
+        if user_id:
+            await log_parse(user_id, url)
         await _send_ad_button(msg)
         return
     if mode == "zip":
         await _send_zip(msg, result, reporter)
+        if user_id:
+            await log_parse(user_id, url)
         await _send_ad_button(msg)
         return
 
@@ -376,6 +496,8 @@ async def handle_parse(
         cache_entry = await _send_media(msg, parse_result, result.processed_list, caption)
         if cache_entry:
             await persistent_cache.set(raw_url, cache_entry)
+        if user_id:
+            await log_parse(user_id, url)
         await reporter.dismiss()
         await _send_ad_button(msg)
     except Exception as e:

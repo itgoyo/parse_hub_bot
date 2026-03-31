@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "aiomysql>=0.3.2",
     "haishoku>=1.1.8",
     "httpx[socks]>=0.28.1",
     "json-repair>=0.58.7",

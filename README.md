@@ -247,6 +247,10 @@ platforms:
       - "SESSDATA=yyy; bili_jct=yyy; buvid3=yyy"
 ```
 
+#### 新增数据库对接
+```
+mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS parse_hub_bot CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+```
 
 
 ## 🌟 Star History

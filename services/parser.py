@@ -12,6 +12,10 @@ logger = logger.bind(name="ParseService")
 # Platforms that support user-provided token fallback
 _TOKEN_SUPPORTED_PLATFORMS = {"twitter", "bilibili", "youtube"}
 
+# Platforms where auth errors mean the cookie itself is invalid (should be removed)
+# YouTube auth errors are usually IP-based rate limits, not cookie issues
+_TOKEN_REMOVABLE_PLATFORMS = {"twitter", "bilibili"}
+
 # Error keywords that indicate a timeout (retrying is usually pointless)
 _TIMEOUT_KEYWORDS = ("超时", "timeout", "timed out", "ReadTimeout", "ConnectTimeout")
 
@@ -60,8 +64,8 @@ class ParseService:
             except Exception as e:
                 err_str = str(e)
 
-                # Token invalid: remove it and retry with next
-                if p.id in _TOKEN_SUPPORTED_PLATFORMS and cookie and PlatformTokenStore.is_auth_error(p.id, err_str):
+                # Token invalid: remove it and retry with next (only for platforms where auth error = bad cookie)
+                if p.id in _TOKEN_REMOVABLE_PLATFORMS and cookie and PlatformTokenStore.is_auth_error(p.id, err_str):
                     store = PlatformTokenStore(p.id)
                     store.remove_token_by_cookie_str(cookie)
                     logger.warning(f"{p.id} Cookie 失效, 已删除, 尝试下一个")

@@ -44,6 +44,10 @@ async def on_disconnect(cli: Client, __) -> None:
 
     # 启动失败
     if not ws.is_running and not ws.restart_count:
+        if ws.disconnect_count < 3:
+            ws.update_bot_disconnect_count()
+            logger.warning(f"Bot 连接失败, 第 {ws.disconnect_count} 次重试中...")
+            return
         exit("Bot 连接失败, 请检查设备网络和代理配置")
 
     # 断开连接

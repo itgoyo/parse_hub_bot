@@ -100,6 +100,15 @@ PLATFORM_AUTH_ERROR_KEYWORDS = {
     "youtube": ["Sign in to confirm you're not a bot", "Sign in to confirm your age", "This video requires authentication", "Use --cookies-from-browser or --cookies"],
 }
 
+# YouTube cookie expired keywords (cookie was passed but is no longer valid)
+YOUTUBE_COOKIE_EXPIRED_KEYWORDS = [
+    "cookies are no longer valid",
+    "cookies have likely been rotated",
+]
+
+# Rate limit keywords
+RATE_LIMIT_KEYWORDS = ["429", "Too Many Requests"]
+
 
 class PlatformTokenStore:
     """Generic token store supporting multiple platforms with round-robin rotation."""
@@ -201,6 +210,17 @@ class PlatformTokenStore:
     def is_auth_error(platform_id: str, error_str: str) -> bool:
         keywords = PLATFORM_AUTH_ERROR_KEYWORDS.get(platform_id, [])
         return any(kw in error_str for kw in keywords)
+
+    @staticmethod
+    def is_cookie_expired(platform_id: str, error_str: str) -> bool:
+        """Check if the error indicates cookies were passed but are expired/invalid."""
+        if platform_id == "youtube":
+            return any(kw in error_str for kw in YOUTUBE_COOKIE_EXPIRED_KEYWORDS)
+        return False
+
+    @staticmethod
+    def is_rate_limited(error_str: str) -> bool:
+        return any(kw in error_str for kw in RATE_LIMIT_KEYWORDS)
 
     @staticmethod
     def get_tutorial(platform_id: str) -> str | None:

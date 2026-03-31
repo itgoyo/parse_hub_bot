@@ -28,6 +28,15 @@ class BotSettings(BaseSettings):
 
     douyin_api: HttpUrl | None = None
 
+    # MySQL
+    mysql_host: str = Field(default="127.0.0.1")
+    mysql_port: int = Field(default=3306)
+    mysql_user: str = Field(default="root")
+    mysql_password: str = Field(default="")
+    mysql_db: str = Field(default="parse_hub_bot")
+    daily_free_quota: int = Field(default=5, description="每日免费解析次数")
+    ad_bonus_quota: int = Field(default=5, description="点击广告奖励解析次数")
+
     def model_post_init(self, __context) -> None:
         """模型初始化后的操作"""
         self.sessions_path.mkdir(parents=True, exist_ok=True)
