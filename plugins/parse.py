@@ -48,7 +48,7 @@ SKIP_DOWNLOAD_THRESHOLD = 0
 MAX_RETRIES = 5
 
 # Platforms that support user-provided token input
-_TOKEN_SUPPORTED_PLATFORMS = {"twitter", "bilibili"}
+_TOKEN_SUPPORTED_PLATFORMS = {"twitter", "bilibili", "youtube"}
 
 # Users waiting to input platform token: {chat_id: {url, mode, platform_id}}
 _token_waiting: dict[int, dict] = {}
@@ -168,11 +168,13 @@ async def jx(cli: Client, msg: Message):
 _PLATFORM_COOKIE_KEYS: dict[str, list[str]] = {
     "twitter": ["auth_token", "ct0"],
     "bilibili": ["SESSDATA", "bili_jct"],
+    "youtube": ["SID", "HSID", "SSID", "APISID", "SAPISID", "LOGIN_INFO"],
 }
 
 _PLATFORM_DISPLAY_NAMES: dict[str, str] = {
     "twitter": "Twitter",
     "bilibili": "Bilibili",
+    "youtube": "YouTube",
 }
 
 

@@ -42,6 +42,34 @@ BILIBILI_TOKEN_TUTORIAL = (
     "Token 提交后将用于解析受限内容，失效后会自动删除。"
 )
 
+YOUTUBE_TOKEN_TUTORIAL = (
+    "**▎YouTube Cookie 获取教程**\n\n"
+    "由于 YouTube 要求登录验证，请提供您的 YouTube Cookie 以继续解析。\n\n"
+    "**方法一：使用浏览器插件导出（推荐）**\n"
+    "1. 安装浏览器插件 [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)\n"
+    "2. 打开浏览器，登录 [YouTube](https://www.youtube.com)\n"
+    "3. 点击插件图标，选择 **Export** 导出当前站点的 Cookie\n"
+    "4. 打开导出的 txt 文件，复制全部内容发送给我\n\n"
+    "**方法二：手动获取关键 Cookie**\n"
+    "1. 打开浏览器，登录 [YouTube](https://www.youtube.com)\n"
+    "2. 按 `F12` 打开开发者工具\n"
+    "3. 切换到 **Application**（应用）标签页\n"
+    "4. 在左侧找到 **Cookies** → `https://www.youtube.com`\n"
+    "5. 找到以下 Cookie 值：\n"
+    "   - `SID`\n"
+    "   - `HSID`\n"
+    "   - `SSID`\n"
+    "   - `APISID`\n"
+    "   - `SAPISID`\n"
+    "   - `LOGIN_INFO`\n"
+    "6. 按以下格式发送给我：\n\n"
+    "`SID=值; HSID=值; SSID=值; APISID=值; SAPISID=值; LOGIN_INFO=值`\n\n"
+    "**示例：**\n"
+    "`SID=abc123; HSID=def456; SSID=ghi789; APISID=jkl012; SAPISID=mno345; LOGIN_INFO=AFmmF2swR...`\n\n"
+    "⚠️ 请注意保护您的 Cookie，不要泄露给不信任的人。\n"
+    "Cookie 提交后将用于解析 YouTube 视频，失效后会自动删除。"
+)
+
 
 # Platform config: required keys, cookie format, unique key for dedup
 PLATFORM_TOKEN_CONFIG = {
@@ -53,17 +81,23 @@ PLATFORM_TOKEN_CONFIG = {
         "required_keys": ["SESSDATA", "bili_jct"],
         "unique_key": "SESSDATA",
     },
+    "youtube": {
+        "required_keys": ["SID", "HSID", "SSID", "APISID", "SAPISID", "LOGIN_INFO"],
+        "unique_key": "SAPISID",
+    },
 }
 
 PLATFORM_TUTORIALS = {
     "twitter": TWITTER_TOKEN_TUTORIAL,
     "bilibili": BILIBILI_TOKEN_TUTORIAL,
+    "youtube": YOUTUBE_TOKEN_TUTORIAL,
 }
 
 # Error keywords that indicate auth/cookie is needed
 PLATFORM_AUTH_ERROR_KEYWORDS = {
     "twitter": ["error -2", "匿名用户无法查看"],
     "bilibili": ["风控", "-352", "动态不可见", "安全风控策略"],
+    "youtube": ["Sign in to confirm you're not a bot", "Sign in to confirm your age", "This video requires authentication", "Use --cookies-from-browser or --cookies"],
 }
 
 

@@ -10,7 +10,7 @@ from services.platform_tokens import PlatformTokenStore
 logger = logger.bind(name="ParseService")
 
 # Platforms that support user-provided token fallback
-_TOKEN_SUPPORTED_PLATFORMS = {"twitter", "bilibili"}
+_TOKEN_SUPPORTED_PLATFORMS = {"twitter", "bilibili", "youtube"}
 
 # Error keywords that indicate a timeout (retrying is usually pointless)
 _TIMEOUT_KEYWORDS = ("超时", "timeout", "timed out", "ReadTimeout", "ConnectTimeout")
